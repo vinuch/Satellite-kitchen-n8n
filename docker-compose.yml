@@ -28,8 +28,42 @@ services:
     networks:
       - n8n_network
 
+  webhook-server:
+    image: node:20-alpine
+    container_name: chowdeck-webhook-server
+    restart: unless-stopped
+    ports:
+      - "${WEBHOOK_SERVER_PORT:-3001}:3001"
+    environment:
+      - PORT=3001
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://n8n:5678/webhook/chowdeck-webhook}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      - VALIDATE_SIGNATURE=${VALIDATE_SIGNATURE:-true}
+      - ENABLE_IP_WHITELIST=${ENABLE_IP_WHITELIST:-false}
+      - IP_WHITELIST=${IP_WHITELIST:-}
+      - RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS:-60000}
+      - RATE_LIMIT_MAX=${RATE_LIMIT_MAX:-100}
+      - LOG_FILE=/app/logs/webhooks.log
+    volumes:
+      - ./webhook-server:/app
+      - webhook_logs:/app/logs
+    working_dir: /app
+    command: sh -c "npm install && npm start"
+    networks:
+      - n8n_network
+    depends_on:
+      - n8n
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
 volumes:
   n8n_data:
+    driver: local
+  webhook_logs:
     driver: local
 
 networks:
