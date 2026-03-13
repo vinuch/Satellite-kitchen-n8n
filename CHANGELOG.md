@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2025-03-13
+
+### Added
+
+#### Chowdeck Webhook Server
+- **Standalone Webhook Server** (`webhook-server/`)
+  - Node.js Express server for receiving Chowdeck webhooks
+  - Endpoint: `POST /webhook/chowdeck`
+  - Signature validation using HMAC-SHA256
+  - IP whitelisting support
+  - Rate limiting (configurable)
+  - Comprehensive logging to file
+  - Health check endpoint: `GET /health`
+  - Log retrieval endpoint: `GET /webhook/logs`
+  
+- **Security Features**
+  - Webhook signature validation with timing-safe comparison
+  - Optional IP whitelist filtering
+  - Rate limiting per IP address
+  - Helmet.js security headers
+  
+- **Docker Integration**
+  - Added `webhook-server` service to docker-compose.yml
+  - Exposes port 3001 (configurable via `WEBHOOK_SERVER_PORT`)
+  - Persistent volume for webhook logs
+  - Health check configuration
+  - Auto-restart on failure
+
+- **Environment Variables**
+  - `WEBHOOK_SERVER_PORT` - Port for webhook server (default: 3001)
+  - `N8N_WEBHOOK_URL` - n8n webhook endpoint URL
+  - `VALIDATE_SIGNATURE` - Enable/disable signature validation
+  - `ENABLE_IP_WHITELIST` - Enable/disable IP filtering
+  - `IP_WHITELIST` - Comma-separated allowed IPs
+  - `RATE_LIMIT_WINDOW_MS` - Rate limit window
+  - `RATE_LIMIT_MAX` - Max requests per window
+
+- **Documentation**
+  - `webhook-setup.md` - Complete setup and configuration guide
+  - API endpoint documentation
+  - Troubleshooting guide
+  - Security configuration details
+
+### Changed
+- Updated docker-compose.yml to include webhook-server service
+- Webhook handler workflow now receives enriched payloads with metadata
+
 ## [1.1.0] - 2025-03-13
 
 ### Added

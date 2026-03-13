@@ -1,0 +1,23 @@
+{
+  "name": "chowdeck-webhook-server",
+  "version": "1.0.0",
+  "description": "Webhook server to receive Chowdeck delivery events and forward to n8n",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
+    "crypto": "^1.0.1",
+    "axios": "^1.6.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
