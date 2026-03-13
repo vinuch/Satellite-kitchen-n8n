@@ -42,7 +42,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Transform Chowdeck API response to standardized format\nconst response = $input.first().json;\n\n// Handle empty response\nif (!response || !response.data || !Array.isArray(response.data) || response.data.length === 0) {\n  return [{\n    json: {\n      orders: [],\n      count: 0,\n      empty: true\n    }\n  }];\n}\n\nconst orders = response.data\n  .filter(order => order && (order.id || order.order_id)) // Skip orders with null/undefined external_order_id\n  .map(order => ({\n    external_order_id: order.id || order.order_id,\n    status: order.status || 'received',\n    customer_name: order.customer?.name || order.customer_name || 'Unknown',\n    customer_phone: order.customer?.phone || order.customer_phone || null,\n    currency: order.currency || 'NGN',\n    total_amount: parseFloat(order.total_amount || order.total || 0) / 100, // Convert kobo to NGN\n    delivery_address: order.delivery_address || order.address || null,\n    source_payload: order,\n    items: (order.items || order.order_items || []).map(item => ({\n      item_name: item.name || item.item_name,\n      quantity: parseInt(item.quantity || 1),\n      unit_price: parseFloat(item.unit_price || item.price || 0) / 100, // Convert kobo to NGN\n      raw_payload: item\n    }))\n  }));\n\nreturn [{\n  json: {\n    orders: orders,\n    count: orders.length,\n    empty: false\n  }\n}];"
+        "jsCode": "// Transform Chowdeck API response to standardized format\nconst response = $input.first().json;\n\n// Handle empty response\nif (!response || !response.data || !Array.isArray(response.data) || response.data.length === 0) {\n  return [{\n    json: {\n      orders: [],\n      count: 0,\n      empty: true\n    }\n  }];\n}\n\nconst orders = response.data\n  .filter(order => order && (order.id || order.order_id)) // Skip orders with null/undefined external_order_id\n  .map(order => ({\n    external_order_id: order.id || order.order_id,\n    status: order.status || 'received',\n    customer_name: order.customer?.name || order.customer_name || 'Unknown',\n    customer_phone: order.customer?.phone || order.customer_phone || null,\n    currency: order.currency || 'NGN',\n    total_amount: parseFloat(order.total_amount || order.total || 0) / 100, // Convert kobo to NGN\n    delivery_address: order.delivery_address || order.address || null,\n    source_payload: order,\n    // Delivery tracking fields\n    delivery_id: order.delivery_id || order.delivery?.id || null,\n    delivery_status: order.delivery?.status || null,\n    rider_name: order.delivery?.rider?.name || order.rider?.name || null,\n    rider_phone: order.delivery?.rider?.phone || order.rider?.phone || null,\n    items: (order.items || order.order_items || []).map(item => ({\n      item_name: item.name || item.item_name,\n      quantity: parseInt(item.quantity || 1),\n      unit_price: parseFloat(item.unit_price || item.price || 0) / 100, // Convert kobo to NGN\n      raw_payload: item\n    }))\n  }));\n\nreturn [{\n  json: {\n    orders: orders,\n    count: orders.length,\n    empty: false\n  }\n}];"
       },
       "id": "transform-orders",
       "name": "Transform Orders",
@@ -150,13 +150,51 @@
     },
     {
       "parameters": {
+        "jsCode": "// Check if this is a website order without delivery_id\n// Website orders without delivery need manual booking\nconst order = $('Split In Batches').item.json;\n\n// Determine source - could be in payload or inferred\nconst sourcePayload = order.source_payload || {};\nconst orderSource = sourcePayload.source || 'chowdeck';\n\n// Check conditions\nconst isWebsiteOrder = orderSource === 'website';\nconst hasNoDelivery = !order.delivery_id;\n\n// Skip if website order with no delivery (admin will book manually)\nconst shouldSkip = isWebsiteOrder && hasNoDelivery;\n\nreturn [{\n  json: {\n    ...order,\n    source: orderSource,\n    should_skip: shouldSkip,\n    skip_reason: shouldSkip ? 'Website order without delivery - manual booking required' : null\n  }\n}];"
+      },
+      "id": "check-source-delivery",
+      "name": "Check Source & Delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 50]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-skip",
+              "leftValue": "={{ $json.should_skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-should-skip",
+      "name": "If Should Skip?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1850, 50]
+    },
+    {
+      "parameters": {
         "operation": "insert",
         "tableId": "orders",
         "fieldsUi": {
           "fieldValues": [
             {
               "fieldId": "source",
-              "fieldValue": "chowdeck"
+              "fieldValue": "={{ $('Check Source & Delivery').item.json.source }}"
             },
             {
               "fieldId": "external_order_id",
@@ -187,6 +225,22 @@
               "fieldValue": "={{ $('Split In Batches').item.json.delivery_address }}"
             },
             {
+              "fieldId": "delivery_id",
+              "fieldValue": "={{ $('Split In Batches').item.json.delivery_id }}"
+            },
+            {
+              "fieldId": "delivery_status",
+              "fieldValue": "={{ $('Split In Batches').item.json.delivery_status }}"
+            },
+            {
+              "fieldId": "rider_name",
+              "fieldValue": "={{ $('Split In Batches').item.json.rider_name }}"
+            },
+            {
+              "fieldId": "rider_phone",
+              "fieldValue": "={{ $('Split In Batches').item.json.rider_phone }}"
+            },
+            {
               "fieldId": "source_payload",
               "fieldValue": "={{ JSON.stringify($('Split In Batches').item.json.source_payload) }}"
             },
@@ -201,7 +255,7 @@
       "name": "Insert Order",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1650, 100],
+      "position": [2050, 0],
       "credentials": {
         "supabaseApi": {
           "id": "supabase-credentials",
@@ -242,7 +296,7 @@
       "name": "Insert Order Items",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1850, 100],
+      "position": [2250, 0],
       "credentials": {
         "supabaseApi": {
           "id": "supabase-credentials",
@@ -287,7 +341,52 @@
       "name": "Log Success",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [2250, 100],
+      "position": [2650, 0],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "order_import_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "source",
+              "fieldValue": "chowdeck"
+            },
+            {
+              "fieldId": "external_order_id",
+              "fieldValue": "={{ $('Split In Batches').item.json.external_order_id }}"
+            },
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $execution.id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "skipped"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "={{ 'Skipped: ' + $('Check Source & Delivery').item.json.skip_reason }}"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($('Split In Batches').item.json) }}"
+            }
+          ]
+        }
+      },
+      "id": "log-skipped",
+      "name": "Log Skipped",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2050, 150],
       "credentials": {
         "supabaseApi": {
           "id": "supabase-credentials",
@@ -442,13 +541,13 @@
     },
     {
       "parameters": {
-        "jsCode": "// Format WhatsApp message for chef\nconst order = $('Split In Batches').item.json;\nconst orderId = order.external_order_id;\nconst customerName = order.customer_name;\nconst customerPhone = order.customer_phone || 'N/A';\nconst totalAmount = order.total_amount.toLocaleString('en-NG', { style: 'currency', currency: order.currency });\nconst deliveryAddress = order.delivery_address || 'Pickup';\n\n// Format items list\nconst itemsList = order.items.map(item => {\n  const itemTotal = (item.quantity * item.unit_price).toLocaleString('en-NG', { style: 'currency', currency: order.currency });\n  return `• ${item.quantity}x ${item.item_name} = ${itemTotal}`;\n}).join('\\n');\n\nconst message = `🍽️ *NEW ORDER* 🍽️\n\n📋 Order: #${orderId}\n👤 Customer: ${customerName}\n📞 Phone: ${customerPhone}\n\n📦 *ITEMS:*\n${itemsList}\n\n💰 *TOTAL: ${totalAmount}*\n\n📍 Delivery: ${deliveryAddress}\n\n⏰ Received: ${new Date().toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' })}`;\n\nreturn [{\n  json: {\n    message: message,\n    order_id: orderId,\n    recipient: $env.CHEF_PHONE\n  }\n}];"
+        "jsCode": "// Format WhatsApp message for chef\nconst order = $('Split In Batches').item.json;\nconst orderId = order.external_order_id;\nconst customerName = order.customer_name;\nconst customerPhone = order.customer_phone || 'N/A';\nconst totalAmount = order.total_amount.toLocaleString('en-NG', { style: 'currency', currency: order.currency });\nconst deliveryAddress = order.delivery_address || 'Pickup';\nconst deliveryId = order.delivery_id;\nconst source = order.source || 'chowdeck';\n\n// Format items list\nconst itemsList = order.items.map(item => {\n  const itemTotal = (item.quantity * item.unit_price).toLocaleString('en-NG', { style: 'currency', currency: order.currency });\n  return `• ${item.quantity}x ${item.item_name} = ${itemTotal}`;\n}).join('\\n');\n\n// Delivery info\nlet deliveryInfo = '';\nif (source === 'website' && !deliveryId) {\n  deliveryInfo = '\\n⚠️ *MANUAL DELIVERY BOOKING REQUIRED*';\n} else if (deliveryId) {\n  deliveryInfo = `\\n🚚 Delivery ID: ${deliveryId}`;\n}\n\nconst message = `🍽️ *NEW ORDER* 🍽️\n\n📋 Order: #${orderId}\n👤 Customer: ${customerName}\n📞 Phone: ${customerPhone}\n📍 Source: ${source.toUpperCase()}${deliveryInfo}\n\n📦 *ITEMS:*\n${itemsList}\n\n💰 *TOTAL: ${totalAmount}*\n\n📍 Delivery: ${deliveryAddress}\n\n⏰ Received: ${new Date().toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' })}`;\n\nreturn [{\n  json: {\n    message: message,\n    order_id: orderId,\n    recipient: $env.CHEF_PHONE,\n    has_delivery: !!deliveryId,\n    source: source\n  }\n}];"
       },
       "id": "format-whatsapp-message",
       "name": "Format WhatsApp Message",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2050, 100]
+      "position": [2450, 0]
     },
     {
       "parameters": {
@@ -487,7 +586,7 @@
       "name": "Send WhatsApp",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [2250, 100],
+      "position": [2650, 0],
       "credentials": {},
       "onError": "continueRegularOutput"
     },
@@ -517,7 +616,7 @@
       "name": "If WhatsApp Success?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [2450, 100]
+      "position": [2850, 0]
     },
     {
       "parameters": {
@@ -545,7 +644,7 @@
       "name": "Update Chef Notified At",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [2650, 50],
+      "position": [3050, -50],
       "credentials": {
         "supabaseApi": {
           "id": "supabase-credentials",
@@ -590,7 +689,7 @@
       "name": "Log WhatsApp Fail",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [2650, 150],
+      "position": [3050, 50],
       "credentials": {
         "supabaseApi": {
           "id": "supabase-credentials",
@@ -692,7 +791,7 @@
       "main": [
         [
           {
-            "node": "Insert Order",
+            "node": "Check Source & Delivery",
             "type": "main",
             "index": 0
           }
@@ -700,6 +799,35 @@
         [
           {
             "node": "Log Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Source & Delivery": {
+      "main": [
+        [
+          {
+            "node": "If Should Skip?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Should Skip?": {
+      "main": [
+        [
+          {
+            "node": "Insert Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Skipped",
             "type": "main",
             "index": 0
           }

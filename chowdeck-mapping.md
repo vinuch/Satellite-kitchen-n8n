@@ -22,11 +22,38 @@ https://api.chowdeck.com/v1
 | `GET /vendor/order?status=success` | Completed/delivered orders |
 | `GET /vendor/order?status=rejected` | Cancelled/rejected orders |
 
+### Delivery Endpoints
+
+| Endpoint | Description | Auth |
+|----------|-------------|------|
+| `GET /delivery/{delivery_id}` | Get delivery status and tracking info | Merchant API Key |
+| `GET /delivery/{delivery_id}/tracking` | Get real-time tracking updates | Merchant API Key |
+| `POST /delivery/{delivery_id}/cancel` | Cancel a delivery (if applicable) | Merchant API Key |
+
+### Webhook Events
+
+Chowdeck can send webhook notifications for delivery events:
+
+| Event | Description |
+|-------|-------------|
+| `order_picked_up` | Rider has picked up the order from vendor |
+| `order_arrived_at_customer` | Rider has arrived at customer location |
+| `order_complete` | Order has been successfully delivered |
+| `delivery_status_updated` | Generic status update event |
+
 ### Authentication
 
 ```http
+# Vendor API (for orders)
 Authorization: Bearer {JWT_TOKEN}
 x-app-name: Vendor Hub
+
+# Merchant API (for delivery endpoints)
+Authorization: Bearer {MERCHANT_API_KEY}
+Content-Type: application/json
+
+# Webhook Validation
+X-Chowdeck-Signature: {hmac_sha256_signature}
 ```
 
 ## Response Structure
@@ -66,6 +93,30 @@ x-app-name: Vendor Hub
 | `estimated_delivery_time` | ISO8601 \| null | Expected delivery time |
 | `delivered_at` | ISO8601 \| null | Actual delivery timestamp |
 | `rejection_reason` | string \| null | Reason for rejection |
+| `delivery_id` | string \| null | Associated delivery ID (if managed by Chowdeck) |
+| `source` | string | Order source: "chowdeck", "website", "app" |
+
+### Delivery Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Delivery ID |
+| `status` | string | Delivery status (see Delivery Status Mapping) |
+| `rider` | object | Rider details |
+| `current_location` | object | GPS coordinates of rider |
+| `estimated_arrival` | ISO8601 | ETA at destination |
+| `pickup_time` | ISO8601 | When order was picked up |
+| `delivery_time` | ISO8601 | When order was delivered |
+
+### Rider Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Rider ID |
+| `name` | string | Rider name |
+| `phone` | string | Rider phone number |
+| `vehicle_type` | string | "motorcycle", "car", "bicycle" |
+| `vehicle_plate` | string | Vehicle registration |
 
 ### Customer Object
 
@@ -143,18 +194,32 @@ x-app-name: Vendor Hub
 | `success` | `delivered` | Successfully delivered |
 | `rejected` | `cancelled` | Order cancelled/rejected |
 
+### Delivery Status Mapping
+
+| Chowdeck Delivery Status | Internal Order Status | Description |
+|--------------------------|----------------------|-------------|
+| `rider_assigned` | `preparing` | Rider assigned, on way to pickup |
+| `rider_at_vendor` | `preparing` | Rider at restaurant |
+| `picked_up` | `rider_left` | Order picked up, en route |
+| `in_transit` | `rider_left` | Rider on the way to customer |
+| `arrived` | `rider_arrived` | Rider at customer location |
+| `delivered` | `delivered` | Order delivered |
+| `completed` | `delivered` | Delivery completed |
+| `cancelled` | `cancelled` | Delivery cancelled |
+
 ### Notes
 
 - `accepted_by_driver` is grouped with `preparing` as the food is still being prepared
 - Both `in_transit` and `arrived` map to `out_for_delivery` for simplicity
 - `rejected` includes both vendor rejections and customer cancellations
+- Delivery status takes precedence when available
 
 ## Field Mapping Reference
 
 | Internal Field | Chowdeck Source | Transform Notes |
 |----------------|-----------------|-----------------|
 | `external_order_id` | `id` | Direct mapping |
-| `source` | hardcoded | Set to "chowdeck" |
+| `source` | hardcoded | Set to "chowdeck" or from payload |
 | `reference` | `reference` | Human-readable order ref |
 | `customer_name` | `customer.first_name + " " + customer.last_name` | Concatenated full name |
 | `customer_phone` | `customer.phone` | Direct mapping (E.164) |
@@ -163,6 +228,10 @@ x-app-name: Vendor Hub
 | `delivery_landmark` | `delivery_address.landmark` | Landmark if available |
 | `delivery_lat` | `delivery_address.latitude` | GPS coordinate |
 | `delivery_lng` | `delivery_address.longitude` | GPS coordinate |
+| `delivery_id` | `delivery_id` or `delivery.id` | For tracking |
+| `delivery_status` | `delivery.status` | Current delivery status |
+| `rider_name` | `delivery.rider.name` or `rider.name` | Rider name |
+| `rider_phone` | `delivery.rider.phone` or `rider.phone` | Rider phone |
 | `items` | `items[]` | Transformed array (see below) |
 | `subtotal` | `pricing.subtotal` | In smallest currency unit |
 | `delivery_fee` | `pricing.delivery_fee` | In smallest currency unit |
@@ -215,6 +284,14 @@ To prevent duplicate order imports:
 3. **Skip if Exists**: If record exists, skip import (or update if data changed)
 4. **Idempotency**: The import process should be idempotent - running twice produces same result
 
+## Website Order Handling
+
+For orders from the website (source='website'):
+
+1. **With Delivery ID**: Process normally - delivery is managed by Chowdeck
+2. **Without Delivery ID**: Skip import notification - admin will book delivery manually
+3. **Manual Booking Required**: Chef gets order but with warning about manual delivery booking
+
 ## Currency Handling
 
 - All monetary values from Chowdeck are in **kobo** (Nigerian Naira smallest unit)
@@ -231,14 +308,41 @@ To prevent duplicate order imports:
 | Missing required fields | Log error, skip order, alert admin |
 | Unknown status value | Log warning, map to `unknown` status |
 | Invalid phone format | Normalize or flag for review |
+| Delivery not found | Log error, keep order status unchanged |
+| Webhook signature invalid | Reject webhook, log security event |
 
 ## Sample API Request
 
 ```bash
+# Get orders
 curl -X GET "https://api.chowdeck.com/v1/vendor/order?status=received&per_page=350" \
   -H "Authorization: Bearer ${JWT_TOKEN}" \
   -H "x-app-name: Vendor Hub" \
   -H "Content-Type: application/json"
+
+# Get delivery status
+curl -X GET "https://api.chowdeck.com/v1/delivery/${DELIVERY_ID}" \
+  -H "Authorization: Bearer ${MERCHANT_API_KEY}" \
+  -H "Content-Type: application/json"
+```
+
+## Webhook Payload Example
+
+```json
+{
+  "event": "order_picked_up",
+  "order_id": "ORD-7F3A9B2C-1E4D",
+  "delivery_id": "DEL-123456789",
+  "timestamp": "2024-03-13T14:30:00Z",
+  "rider": {
+    "name": "John Doe",
+    "phone": "+2348012345678"
+  },
+  "location": {
+    "lat": 6.5244,
+    "lng": 3.3792
+  }
+}
 ```
 
 ## Pagination
