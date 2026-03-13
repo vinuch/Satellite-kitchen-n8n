@@ -1,0 +1,292 @@
+{
+  "name": "Manager Alert Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "schedule-trigger"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "order_import_logs",
+        "filters": {
+          "conditions": [
+            {
+              "column": "status",
+              "operator": "eq",
+              "value": "notification_failed"
+            },
+            {
+              "column": "created_at",
+              "operator": "gt",
+              "value": "={{ $now.minus({ minutes: 10 }).toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "check-failed-notifications",
+      "name": "Check Failed Notifications",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Count failed notifications and group by order\nconst failedLogs = $input.all()[0]?.json || [];\n\nif (!Array.isArray(failedLogs) || failedLogs.length === 0) {\n  return [{\n    json: {\n      count: 0,\n      shouldAlert: false,\n      message: null\n    }\n  }];\n}\n\n// Group by external_order_id to get unique orders\nconst uniqueOrders = [...new Set(failedLogs.map(log => log.external_order_id))];\n\n// Threshold: alert if 3+ failed notifications in 10 minutes\nconst threshold = 3;\nconst shouldAlert = failedLogs.length >= threshold;\n\n// Format message for manager\nconst message = shouldAlert \n  ? `🚨 *ALERT: WhatsApp Notifications Failing* 🚨\\n\\n${failedLogs.length} notification(s) failed in the last 10 minutes.\\n\\nAffected Orders: ${uniqueOrders.join(', ')}\\n\\nPlease check the WhatsApp API connection and chef phone number.`\n  : null;\n\nreturn [{\n  json: {\n    count: failedLogs.length,\n    uniqueOrders: uniqueOrders,\n    shouldAlert: shouldAlert,\n    message: message,\n    recipient: $env.MANAGER_PHONE\n  }\n}];"
+      },
+      "id": "analyze-failures",
+      "name": "Analyze Failures",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-should-alert",
+              "leftValue": "={{ $json.shouldAlert }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-should-alert",
+      "name": "If Should Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHATSAPP_API_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.WHATSAPP_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $json.recipient }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.message }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-manager-alert",
+      "name": "Send Manager Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 200],
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "order_import_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "source",
+              "fieldValue": "manager_alert"
+            },
+            {
+              "fieldId": "external_order_id",
+              "fieldValue": "N/A"
+            },
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $execution.id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "manager_alert_sent"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "={{ 'Manager alerted about ' + $('Analyze Failures').item.json.count + ' failed WhatsApp notifications' }}"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($('Analyze Failures').item.json) }}"
+            }
+          ]
+        }
+      },
+      "id": "log-alert-sent",
+      "name": "Log Alert Sent",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1250, 200],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "order_import_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "source",
+              "fieldValue": "manager_alert"
+            },
+            {
+              "fieldId": "external_order_id",
+              "fieldValue": "N/A"
+            },
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $execution.id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "no_alert_needed"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "={{ 'Check completed. ' + $('Analyze Failures').item.json.count + ' failed notifications (below threshold)' }}"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($('Analyze Failures').item.json) }}"
+            }
+          ]
+        }
+      },
+      "id": "log-no-alert",
+      "name": "Log No Alert",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Failed Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Failed Notifications": {
+      "main": [
+        [
+          {
+            "node": "Analyze Failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Failures": {
+      "main": [
+        [
+          {
+            "node": "If Should Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Should Alert?": {
+      "main": [
+        [
+          {
+            "node": "Send Manager Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log No Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Manager Alert": {
+      "main": [
+        [
+          {
+            "node": "Log Alert Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

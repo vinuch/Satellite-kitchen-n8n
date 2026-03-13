@@ -42,7 +42,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Transform Chowdeck API response to standardized format\nconst response = $input.first().json;\n\n// Handle empty response\nif (!response || !response.data || !Array.isArray(response.data) || response.data.length === 0) {\n  return [{\n    json: {\n      orders: [],\n      count: 0,\n      empty: true\n    }\n  }];\n}\n\nconst orders = response.data.map(order => ({\n  external_order_id: order.id || order.order_id,\n  status: order.status || 'received',\n  customer_name: order.customer?.name || order.customer_name || 'Unknown',\n  customer_phone: order.customer?.phone || order.customer_phone || null,\n  currency: order.currency || 'NGN',\n  total_amount: parseFloat(order.total_amount || order.total || 0),\n  source_payload: order,\n  items: (order.items || order.order_items || []).map(item => ({\n    item_name: item.name || item.item_name,\n    quantity: parseInt(item.quantity || 1),\n    unit_price: parseFloat(item.unit_price || item.price || 0),\n    raw_payload: item\n  }))\n}));\n\nreturn [{\n  json: {\n    orders: orders,\n    count: orders.length,\n    empty: false\n  }\n}];"
+        "jsCode": "// Transform Chowdeck API response to standardized format\nconst response = $input.first().json;\n\n// Handle empty response\nif (!response || !response.data || !Array.isArray(response.data) || response.data.length === 0) {\n  return [{\n    json: {\n      orders: [],\n      count: 0,\n      empty: true\n    }\n  }];\n}\n\nconst orders = response.data.map(order => ({\n  external_order_id: order.id || order.order_id,\n  status: order.status || 'received',\n  customer_name: order.customer?.name || order.customer_name || 'Unknown',\n  customer_phone: order.customer?.phone || order.customer_phone || null,\n  currency: order.currency || 'NGN',\n  total_amount: parseFloat(order.total_amount || order.total || 0),\n  delivery_address: order.delivery_address || order.address || null,\n  source_payload: order,\n  items: (order.items || order.order_items || []).map(item => ({\n    item_name: item.name || item.item_name,\n    quantity: parseInt(item.quantity || 1),\n    unit_price: parseFloat(item.unit_price || item.price || 0),\n    raw_payload: item\n  }))\n}));\n\nreturn [{\n  json: {\n    orders: orders,\n    count: orders.length,\n    empty: false\n  }\n}];"
       },
       "id": "transform-orders",
       "name": "Transform Orders",
@@ -183,6 +183,10 @@
               "fieldValue": "={{ $('Split In Batches').item.json.total_amount }}"
             },
             {
+              "fieldId": "delivery_address",
+              "fieldValue": "={{ $('Split In Batches').item.json.delivery_address }}"
+            },
+            {
               "fieldId": "source_payload",
               "fieldValue": "={{ JSON.stringify($('Split In Batches').item.json.source_payload) }}"
             },
@@ -283,7 +287,7 @@
       "name": "Log Success",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [2050, 100],
+      "position": [2250, 100],
       "credentials": {
         "supabaseApi": {
           "id": "supabase-credentials",
@@ -435,6 +439,164 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [450, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format WhatsApp message for chef\nconst order = $('Split In Batches').item.json;\nconst orderId = order.external_order_id;\nconst customerName = order.customer_name;\nconst customerPhone = order.customer_phone || 'N/A';\nconst totalAmount = order.total_amount.toLocaleString('en-NG', { style: 'currency', currency: order.currency });\nconst deliveryAddress = order.delivery_address || 'Pickup';\n\n// Format items list\nconst itemsList = order.items.map(item => {\n  const itemTotal = (item.quantity * item.unit_price).toLocaleString('en-NG', { style: 'currency', currency: order.currency });\n  return `• ${item.quantity}x ${item.item_name} = ${itemTotal}`;\n}).join('\\n');\n\nconst message = `🍽️ *NEW ORDER* 🍽️\n\n📋 Order: #${orderId}\n👤 Customer: ${customerName}\n📞 Phone: ${customerPhone}\n\n📦 *ITEMS:*\n${itemsList}\n\n💰 *TOTAL: ${totalAmount}*\n\n📍 Delivery: ${deliveryAddress}\n\n⏰ Received: ${new Date().toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' })}`;\n\nreturn [{\n  json: {\n    message: message,\n    order_id: orderId,\n    recipient: $env.CHEF_PHONE\n  }\n}];"
+      },
+      "id": "format-whatsapp-message",
+      "name": "Format WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHATSAPP_API_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.WHATSAPP_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $json.recipient }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.message }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-whatsapp",
+      "name": "Send WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2250, 100],
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-whatsapp-success",
+              "leftValue": "={{ $json.status >= 200 && $json.status < 300 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-whatsapp-success",
+      "name": "If WhatsApp Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2450, 100]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "orders",
+        "filters": {
+          "conditions": [
+            {
+              "column": "external_order_id",
+              "operator": "eq",
+              "value": "={{ $('Split In Batches').item.json.external_order_id }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "chef_notified_at",
+              "fieldValue": "={{ $now }}"
+            }
+          ]
+        }
+      },
+      "id": "update-chef-notified",
+      "name": "Update Chef Notified At",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2650, 50],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "order_import_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "source",
+              "fieldValue": "chowdeck"
+            },
+            {
+              "fieldId": "external_order_id",
+              "fieldValue": "={{ $('Split In Batches').item.json.external_order_id }}"
+            },
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $execution.id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "notification_failed"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "={{ 'WhatsApp notification failed: ' + $json.message }}"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($json) }}"
+            }
+          ]
+        }
+      },
+      "id": "log-whatsapp-fail",
+      "name": "Log WhatsApp Fail",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2650, 150],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
     }
   ],
   "pinData": {},
@@ -550,7 +712,52 @@
       "main": [
         [
           {
+            "node": "Format WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "If WhatsApp Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If WhatsApp Success?": {
+      "main": [
+        [
+          {
+            "node": "Update Chef Notified At",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Log Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log WhatsApp Fail",
             "type": "main",
             "index": 0
           }
