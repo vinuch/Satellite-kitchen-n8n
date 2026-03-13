@@ -1,0 +1,561 @@
+{
+  "name": "Chowdeck Order Poller",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "schedule-trigger"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.CHOWDECK_API_URL }}/orders",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "received"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.CHOWDECK_API_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-request",
+      "name": "HTTP Request - Chowdeck Orders",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transform Chowdeck API response to standardized format\nconst response = $input.first().json;\n\n// Handle empty response\nif (!response || !response.data || !Array.isArray(response.data) || response.data.length === 0) {\n  return [{\n    json: {\n      orders: [],\n      count: 0,\n      empty: true\n    }\n  }];\n}\n\nconst orders = response.data.map(order => ({\n  external_order_id: order.id || order.order_id,\n  status: order.status || 'received',\n  customer_name: order.customer?.name || order.customer_name || 'Unknown',\n  customer_phone: order.customer?.phone || order.customer_phone || null,\n  currency: order.currency || 'NGN',\n  total_amount: parseFloat(order.total_amount || order.total || 0),\n  source_payload: order,\n  items: (order.items || order.order_items || []).map(item => ({\n    item_name: item.name || item.item_name,\n    quantity: parseInt(item.quantity || 1),\n    unit_price: parseFloat(item.unit_price || item.price || 0),\n    raw_payload: item\n  }))\n}));\n\nreturn [{\n  json: {\n    orders: orders,\n    count: orders.length,\n    empty: false\n  }\n}];"
+      },
+      "id": "transform-orders",
+      "name": "Transform Orders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-empty",
+              "leftValue": "={{ $json.empty }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-empty",
+      "name": "If Empty?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-batches",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "orders",
+        "filters": {
+          "conditions": [
+            {
+              "column": "external_order_id",
+              "operator": "eq",
+              "value": "={{ $json.external_order_id }}"
+            },
+            {
+              "column": "source",
+              "operator": "eq",
+              "value": "chowdeck"
+            }
+          ]
+        }
+      },
+      "id": "check-duplicate",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1250, 200],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-exists",
+              "leftValue": "={{ $json.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-duplicate",
+      "name": "If Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1450, 200]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "orders",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "source",
+              "fieldValue": "chowdeck"
+            },
+            {
+              "fieldId": "external_order_id",
+              "fieldValue": "={{ $('Split In Batches').item.json.external_order_id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "={{ $('Split In Batches').item.json.status }}"
+            },
+            {
+              "fieldId": "customer_name",
+              "fieldValue": "={{ $('Split In Batches').item.json.customer_name }}"
+            },
+            {
+              "fieldId": "customer_phone",
+              "fieldValue": "={{ $('Split In Batches').item.json.customer_phone }}"
+            },
+            {
+              "fieldId": "currency",
+              "fieldValue": "={{ $('Split In Batches').item.json.currency }}"
+            },
+            {
+              "fieldId": "total_amount",
+              "fieldValue": "={{ $('Split In Batches').item.json.total_amount }}"
+            },
+            {
+              "fieldId": "source_payload",
+              "fieldValue": "={{ JSON.stringify($('Split In Batches').item.json.source_payload) }}"
+            },
+            {
+              "fieldId": "imported_at",
+              "fieldValue": "={{ $now }}"
+            }
+          ]
+        }
+      },
+      "id": "insert-order",
+      "name": "Insert Order",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1650, 100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "order_items",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "order_id",
+              "fieldValue": "={{ $json.id }}"
+            },
+            {
+              "fieldId": "item_name",
+              "fieldValue": "={{ $item.json.item_name }}"
+            },
+            {
+              "fieldId": "quantity",
+              "fieldValue": "={{ $item.json.quantity }}"
+            },
+            {
+              "fieldId": "unit_price",
+              "fieldValue": "={{ $item.json.unit_price }}"
+            },
+            {
+              "fieldId": "raw_payload",
+              "fieldValue": "={{ JSON.stringify($item.json.raw_payload) }}"
+            }
+          ]
+        }
+      },
+      "id": "insert-order-items",
+      "name": "Insert Order Items",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1850, 100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "order_import_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "source",
+              "fieldValue": "chowdeck"
+            },
+            {
+              "fieldId": "external_order_id",
+              "fieldValue": "={{ $('Split In Batches').item.json.external_order_id }}"
+            },
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $execution.id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "success"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "Order imported successfully"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($('Split In Batches').item.json) }}"
+            }
+          ]
+        }
+      },
+      "id": "log-success",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2050, 100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "order_import_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "source",
+              "fieldValue": "chowdeck"
+            },
+            {
+              "fieldId": "external_order_id",
+              "fieldValue": "={{ $('Split In Batches').item.json.external_order_id }}"
+            },
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $execution.id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "skipped"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "Duplicate order - already exists in database"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($('Split In Batches').item.json) }}"
+            }
+          ]
+        }
+      },
+      "id": "log-duplicate",
+      "name": "Log Duplicate",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1650, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "order_import_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "source",
+              "fieldValue": "chowdeck"
+            },
+            {
+              "fieldId": "external_order_id",
+              "fieldValue": "N/A"
+            },
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $execution.id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "empty"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "No new orders found"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "{}"
+            }
+          ]
+        }
+      },
+      "id": "log-empty",
+      "name": "Log Empty",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "order_import_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "source",
+              "fieldValue": "chowdeck"
+            },
+            {
+              "fieldId": "external_order_id",
+              "fieldValue": "N/A"
+            },
+            {
+              "fieldId": "run_id",
+              "fieldValue": "={{ $execution.id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "error"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "={{ $json.message }}"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($json) }}"
+            }
+          ]
+        }
+      },
+      "id": "log-error",
+      "name": "Log Error",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [450, 500],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Error handling and retry logic\nconst maxRetries = 3;\nconst retryDelay = 5000; // 5 seconds\n\nlet lastError = null;\nlet result = null;\n\nfor (let attempt = 1; attempt <= maxRetries; attempt++) {\n  try {\n    // Get the input data\n    const input = $input.first();\n    \n    // Check if this is an HTTP error\n    if (input.error) {\n      throw new Error(input.error.message || 'Unknown HTTP error');\n    }\n    \n    // If we get here, the request succeeded\n    result = input.json;\n    break;\n    \n  } catch (error) {\n    lastError = error;\n    \n    if (attempt < maxRetries) {\n      // Log retry attempt\n      console.log(`Retry attempt ${attempt}/${maxRetries} after ${retryDelay}ms`);\n      \n      // Wait before retry\n      await new Promise(resolve => setTimeout(resolve, retryDelay));\n    }\n  }\n}\n\nif (!result && lastError) {\n  // All retries failed\n  return [{\n    json: {\n      error: true,\n      message: lastError.message,\n      retries: maxRetries,\n      timestamp: new Date().toISOString()\n    }\n  }];\n}\n\nreturn [{\n  json: result\n}];"
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 400]
+    }
+  ],
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Chowdeck Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Chowdeck Orders": {
+      "main": [
+        [
+          {
+            "node": "Transform Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Orders": {
+      "main": [
+        [
+          {
+            "node": "If Empty?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Empty?": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [
+          {
+            "node": "Check Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Duplicate": {
+      "main": [
+        [
+          {
+            "node": "If Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Insert Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Order": {
+      "main": [
+        [
+          {
+            "node": "Insert Order Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Order Items": {
+      "main": [
+        [
+          {
+            "node": "Log Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
