@@ -156,7 +156,10 @@ function transformResponse(response) {
     };
   }
 
-  const orders = response.data.orders.map(transformOrder).filter(order => order !== null);
+  const orders = response.data.orders
+    .filter(order => order && (order.id || order.order_id)) // Skip orders with null/undefined external_order_id
+    .map(transformOrder)
+    .filter(order => order !== null);
 
   return {
     orders: orders,
@@ -529,7 +532,41 @@ test('should filter out null orders', () => {
     }
   };
   const transformed = transformResponse(response);
-  
+
+  assert.strictEqual(transformed.count, 1);
+  assert.strictEqual(transformed.orders.length, 1);
+});
+
+test('should filter out orders with null external_order_id', () => {
+  const response = {
+    status: 'success',
+    data: {
+      orders: [
+        { ...samplePayload.data.orders[0], id: null, order_id: null },
+        samplePayload.data.orders[0],
+        { ...samplePayload.data.orders[0], id: null }
+      ]
+    }
+  };
+  const transformed = transformResponse(response);
+
+  assert.strictEqual(transformed.count, 1);
+  assert.strictEqual(transformed.orders.length, 1);
+  assert.strictEqual(transformed.orders[0].external_order_id, 'ORD-7F3A9B2C-1E4D');
+});
+
+test('should filter out orders with undefined external_order_id', () => {
+  const response = {
+    status: 'success',
+    data: {
+      orders: [
+        { ...samplePayload.data.orders[0], id: undefined },
+        samplePayload.data.orders[0]
+      ]
+    }
+  };
+  const transformed = transformResponse(response);
+
   assert.strictEqual(transformed.count, 1);
   assert.strictEqual(transformed.orders.length, 1);
 });

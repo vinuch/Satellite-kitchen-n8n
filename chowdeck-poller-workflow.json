@@ -42,7 +42,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Transform Chowdeck API response to standardized format\nconst response = $input.first().json;\n\n// Handle empty response\nif (!response || !response.data || !Array.isArray(response.data) || response.data.length === 0) {\n  return [{\n    json: {\n      orders: [],\n      count: 0,\n      empty: true\n    }\n  }];\n}\n\nconst orders = response.data.map(order => ({\n  external_order_id: order.id || order.order_id,\n  status: order.status || 'received',\n  customer_name: order.customer?.name || order.customer_name || 'Unknown',\n  customer_phone: order.customer?.phone || order.customer_phone || null,\n  currency: order.currency || 'NGN',\n  total_amount: parseFloat(order.total_amount || order.total || 0),\n  delivery_address: order.delivery_address || order.address || null,\n  source_payload: order,\n  items: (order.items || order.order_items || []).map(item => ({\n    item_name: item.name || item.item_name,\n    quantity: parseInt(item.quantity || 1),\n    unit_price: parseFloat(item.unit_price || item.price || 0),\n    raw_payload: item\n  }))\n}));\n\nreturn [{\n  json: {\n    orders: orders,\n    count: orders.length,\n    empty: false\n  }\n}];"
+        "jsCode": "// Transform Chowdeck API response to standardized format\nconst response = $input.first().json;\n\n// Handle empty response\nif (!response || !response.data || !Array.isArray(response.data) || response.data.length === 0) {\n  return [{\n    json: {\n      orders: [],\n      count: 0,\n      empty: true\n    }\n  }];\n}\n\nconst orders = response.data\n  .filter(order => order && (order.id || order.order_id)) // Skip orders with null/undefined external_order_id\n  .map(order => ({\n    external_order_id: order.id || order.order_id,\n    status: order.status || 'received',\n    customer_name: order.customer?.name || order.customer_name || 'Unknown',\n    customer_phone: order.customer?.phone || order.customer_phone || null,\n    currency: order.currency || 'NGN',\n    total_amount: parseFloat(order.total_amount || order.total || 0) / 100, // Convert kobo to NGN\n    delivery_address: order.delivery_address || order.address || null,\n    source_payload: order,\n    items: (order.items || order.order_items || []).map(item => ({\n      item_name: item.name || item.item_name,\n      quantity: parseInt(item.quantity || 1),\n      unit_price: parseFloat(item.unit_price || item.price || 0) / 100, // Convert kobo to NGN\n      raw_payload: item\n    }))\n  }));\n\nreturn [{\n  json: {\n    orders: orders,\n    count: orders.length,\n    empty: false\n  }\n}];"
       },
       "id": "transform-orders",
       "name": "Transform Orders",
@@ -502,7 +502,7 @@
           "conditions": [
             {
               "id": "condition-whatsapp-success",
-              "leftValue": "={{ $json.status >= 200 && $json.status < 300 }}",
+              "leftValue": "={{ !$json.error }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -622,6 +622,15 @@
         [
           {
             "node": "Transform Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Error Handler",
             "type": "main",
             "index": 0
           }
@@ -758,6 +767,17 @@
         [
           {
             "node": "Log WhatsApp Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Log Error",
             "type": "main",
             "index": 0
           }
