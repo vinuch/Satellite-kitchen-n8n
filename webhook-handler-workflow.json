@@ -1,0 +1,607 @@
+{
+  "name": "Chowdeck Webhook Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chowdeck-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "chowdeck-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate webhook signature\nconst crypto = require('crypto');\n\nconst payload = JSON.stringify($input.first().json);\nconst signature = $input.first().headers?.['x-chowdeck-signature'] || $input.first().headers?.['X-Chowdeck-Signature'];\nconst secret = $env.WEBHOOK_SECRET;\n\nif (!secret) {\n  console.log('WEBHOOK_SECRET not set, skipping validation');\n  return [{\n    json: {\n      validated: true,\n      payload: $input.first().json,\n      warning: 'Webhook secret not configured'\n    }\n  }];\n}\n\nif (!signature) {\n  return [{\n    json: {\n      validated: false,\n      error: 'Missing webhook signature',\n      payload: $input.first().json\n    }\n  }];\n}\n\n// Compute expected signature\nconst expectedSignature = crypto\n  .createHmac('sha256', secret)\n  .update(payload)\n  .digest('hex');\n\n// Compare signatures (timing-safe)\nconst isValid = crypto.timingSafeEqual(\n  Buffer.from(signature),\n  Buffer.from(expectedSignature)\n);\n\nreturn [{\n  json: {\n    validated: isValid,\n    payload: $input.first().json,\n    error: isValid ? null : 'Invalid webhook signature'\n  }\n}];"
+      },
+      "id": "validate-webhook",
+      "name": "Validate Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-valid",
+              "leftValue": "={{ $json.validated }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-valid",
+      "name": "If Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse and route webhook event\nconst payload = $input.first().json.payload;\nconst eventType = payload.event || payload.event_type || payload.type;\n\n// Supported events\nconst supportedEvents = [\n  'order_picked_up',\n  'order_arrived_at_customer',\n  'order_complete',\n  'delivery_status_updated'\n];\n\nif (!supportedEvents.includes(eventType)) {\n  return [{\n    json: {\n      handled: false,\n      event_type: eventType,\n      reason: 'Unsupported event type',\n      payload: payload\n    }\n  }];\n}\n\n// Extract order/delivery info\nconst orderId = payload.order_id || payload.order?.id;\nconst deliveryId = payload.delivery_id || payload.delivery?.id || payload.order?.delivery_id;\nconst deliveryStatus = payload.delivery_status || payload.status || payload.delivery?.status;\n\n// Map event to order status\nconst eventStatusMap = {\n  'order_picked_up': {\n    order_status: 'rider_left',\n    delivery_status: 'picked_up',\n    message: 'Rider has picked up the order'\n  },\n  'order_arrived_at_customer': {\n    order_status: 'rider_arrived',\n    delivery_status: 'arrived',\n    message: 'Rider has arrived at customer location'\n  },\n  'order_complete': {\n    order_status: 'delivered',\n    delivery_status: 'delivered',\n    message: 'Order has been delivered successfully'\n  },\n  'delivery_status_updated': {\n    order_status: null, // Will be determined from delivery_status\n    delivery_status: deliveryStatus,\n    message: 'Delivery status updated'\n  }\n};\n\nconst mapping = eventStatusMap[eventType];\n\n// For generic status updates, map the delivery status\nif (eventType === 'delivery_status_updated' && deliveryStatus) {\n  const statusMap = {\n    'rider_assigned': 'preparing',\n    'picked_up': 'rider_left',\n    'in_transit': 'rider_left',\n    'arrived': 'rider_arrived',\n    'delivered': 'delivered',\n    'completed': 'delivered'\n  };\n  mapping.order_status = statusMap[deliveryStatus] || null;\n}\n\nreturn [{\n  json: {\n    handled: true,\n    event_type: eventType,\n    order_id: orderId,\n    delivery_id: deliveryId,\n    new_order_status: mapping.order_status,\n    new_delivery_status: mapping.delivery_status,\n    message: mapping.message,\n    rider_name: payload.rider?.name || payload.driver?.name || null,\n    rider_phone: payload.rider?.phone || payload.driver?.phone || null,\n    location: payload.location || payload.current_location || null,\n    eta: payload.eta || payload.estimated_arrival || null,\n    timestamp: payload.timestamp || new Date().toISOString(),\n    raw_payload: payload\n  }\n}];"
+      },
+      "id": "parse-event",
+      "name": "Parse Webhook Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-handled",
+              "leftValue": "={{ $json.handled }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-handled",
+      "name": "If Handled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1050, 200]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "orders",
+        "filters": {
+          "conditions": [
+            {
+              "column": "external_order_id",
+              "operator": "eq",
+              "value": "={{ $json.order_id }}"
+            }
+          ]
+        }
+      },
+      "id": "find-order",
+      "name": "Find Order",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1250, 100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-found",
+              "leftValue": "={{ $json.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-found",
+      "name": "If Order Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1450, 100]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "orders",
+        "filters": {
+          "conditions": [
+            {
+              "column": "id",
+              "operator": "eq",
+              "value": "={{ $json[0].id }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "status",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.new_order_status }}"
+            },
+            {
+              "fieldId": "delivery_status",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.new_delivery_status }}"
+            },
+            {
+              "fieldId": "rider_name",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.rider_name }}"
+            },
+            {
+              "fieldId": "rider_phone",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.rider_phone }}"
+            },
+            {
+              "fieldId": "updated_at",
+              "fieldValue": "={{ $now }}"
+            }
+          ]
+        }
+      },
+      "id": "update-order",
+      "name": "Update Order",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1650, 50],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format WhatsApp notification based on event type\nconst event = $('Parse Webhook Event').item.json;\nconst order = $input.first().json[0];\n\nconst statusEmojis = {\n  'rider_left': '🛵',\n  'rider_arrived': '📍',\n  'delivered': '✅',\n  'preparing': '👨‍🍳'\n};\n\nconst emoji = statusEmojis[event.new_order_status] || '📦';\n\nlet riderInfo = '';\nif (event.rider_name) {\n  riderInfo = `\\n👤 Rider: ${event.rider_name}`;\n  if (event.rider_phone) {\n    riderInfo += `\\n📞 Phone: ${event.rider_phone}`;\n  }\n}\n\nlet locationInfo = '';\nif (event.location) {\n  const lat = event.location.lat || event.location.latitude;\n  const lng = event.location.lng || event.location.longitude;\n  if (lat && lng) {\n    locationInfo = `\\n📍 Location: https://maps.google.com/?q=${lat},${lng}`;\n  }\n}\n\nlet etaInfo = '';\nif (event.eta) {\n  const etaTime = new Date(event.eta).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' });\n  etaInfo = `\\n⏰ ETA: ${etaTime}`;\n}\n\nconst message = `${emoji} *WEBHOOK ALERT* ${emoji}\\n\\n📋 Order: #${event.order_id}\\n👤 Customer: ${order.customer_name}\\n\\n🚚 *${event.message}*${riderInfo}${locationInfo}${etaInfo}\\n\\n⏰ ${new Date().toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit' })}`;\n\nreturn [{\n  json: {\n    message: message,\n    order_id: event.order_id,\n    recipient: $env.CHEF_PHONE,\n    event_type: event.event_type,\n    status: event.new_order_status\n  }\n}];"
+      },
+      "id": "format-whatsapp",
+      "name": "Format WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 50]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHATSAPP_API_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.WHATSAPP_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $json.recipient }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.message }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "send-whatsapp",
+      "name": "Send WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2050, 50],
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "webhook_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "event_type",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.event_type }}"
+            },
+            {
+              "fieldId": "order_id",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.order_id }}"
+            },
+            {
+              "fieldId": "delivery_id",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.delivery_id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "processed"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($('Parse Webhook Event').item.json.raw_payload) }}"
+            },
+            {
+              "fieldId": "processed_at",
+              "fieldValue": "={{ $now }}"
+            }
+          ]
+        }
+      },
+      "id": "log-webhook",
+      "name": "Log Webhook",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1650, 150],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "webhook_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "event_type",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.event_type }}"
+            },
+            {
+              "fieldId": "order_id",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.order_id }}"
+            },
+            {
+              "fieldId": "delivery_id",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.delivery_id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "order_not_found"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($('Parse Webhook Event').item.json.raw_payload) }}"
+            },
+            {
+              "fieldId": "processed_at",
+              "fieldValue": "={{ $now }}"
+            }
+          ]
+        }
+      },
+      "id": "log-order-not-found",
+      "name": "Log Order Not Found",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1650, 250],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "webhook_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "event_type",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.event_type || 'unknown' }}"
+            },
+            {
+              "fieldId": "order_id",
+              "fieldValue": "={{ $('Parse Webhook Event').item.json.order_id || 'unknown' }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "unhandled"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($('Parse Webhook Event').item.json.raw_payload || $('Parse Webhook Event').item.json) }}"
+            },
+            {
+              "fieldId": "processed_at",
+              "fieldValue": "={{ $now }}"
+            }
+          ]
+        }
+      },
+      "id": "log-unhandled",
+      "name": "Log Unhandled Event",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1050, 350],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "tableId": "webhook_logs",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "event_type",
+              "fieldValue": "invalid_signature"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "rejected"
+            },
+            {
+              "fieldId": "error_message",
+              "fieldValue": "={{ $('Validate Webhook').item.json.error }}"
+            },
+            {
+              "fieldId": "payload",
+              "fieldValue": "={{ JSON.stringify($('Validate Webhook').item.json.payload) }}"
+            },
+            {
+              "fieldId": "processed_at",
+              "fieldValue": "={{ $now }}"
+            }
+          ]
+        }
+      },
+      "id": "log-invalid",
+      "name": "Log Invalid Webhook",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [850, 450],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-credentials",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: \"Webhook processed successfully\", event_type: $json.event_type, order_id: $json.order_id }) }}",
+        "statusCode": "200",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2250, 50]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.error || \"Invalid request\" }) }}",
+        "statusCode": "400",
+        "options": {}
+      },
+      "id": "respond-error",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1050, 550]
+    }
+  ],
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Webhook": {
+      "main": [
+        [
+          {
+            "node": "If Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Valid?": {
+      "main": [
+        [
+          {
+            "node": "Parse Webhook Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Invalid Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Webhook Event": {
+      "main": [
+        [
+          {
+            "node": "If Handled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Handled?": {
+      "main": [
+        [
+          {
+            "node": "Find Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Unhandled Event",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Order": {
+      "main": [
+        [
+          {
+            "node": "If Order Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Order Found?": {
+      "main": [
+        [
+          {
+            "node": "Update Order",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Order Not Found",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Order": {
+      "main": [
+        [
+          {
+            "node": "Format WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
